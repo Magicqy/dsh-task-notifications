@@ -1,6 +1,6 @@
 {
   "name": "dsh-task-notifications",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "description": "Background task notifications for DeepSeek Harness Desktop (Windows).",
@@ -16,7 +16,7 @@
   "homepage": "https://github.com/Magicqy/dsh-task-notifications#readme",
   "bugs": { "url": "https://github.com/Magicqy/dsh-task-notifications/issues" },
   "license": "MIT",
-  "files": ["index.js", "completion.js", "windows.js", "flash.ps1", "cordis.patch.yml", "locale/*.json", "icon.svg", "README.md", "LICENSE", "check.mjs", "check-windows.mjs"],
-  "scripts": { "test": "node check.mjs && node check-windows.mjs" },
+  "files": ["index.js", "completion.js", "titles.js", "windows.js", "flash.ps1", "cordis.patch.yml", "locale/*.json", "icon.svg", "README.md", "LICENSE", "check.mjs", "check-windows.mjs", "check-preferences.mjs"],
+  "scripts": { "test": "node check.mjs && node check-windows.mjs && node check-preferences.mjs" },
   "dsh": { "bundle": { "patch": "./cordis.patch.yml", "platforms": ["win32"] } }
 }

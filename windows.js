@@ -51,8 +51,28 @@ function classifyExecError(error) {
   return 'helper-failed'
 }
 
+function normalizeToastTitle(value) {
+  if (typeof value !== 'string') return ''
+  let title = ''
+  let length = 0
+  let space = false
+  for (const char of value) {
+    if (/[\s\p{Cc}]/u.test(char)) {
+      space = length > 0
+      continue
+    }
+    // Omit lone surrogates, invalid XML characters and bidi formatting controls.
+    if (/[\uD800-\uDFFF\uFFFE\uFFFF\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/u.test(char)) continue
+    length += space ? 2 : 1
+    if (length > 120) break // Bound by Unicode code points, without splitting surrogate pairs.
+    title += space ? ` ${char}` : char
+    space = false
+  }
+  return title
+}
+
 export async function requestAttention(
-  { parentId = process.ppid, desktopExe = process.execPath, probe = false, test = false, signal } = {},
+  { parentId = process.ppid, desktopExe = process.execPath, probe = false, test = false, conversationTitle, signal } = {},
   { exec = execPowerShell, platform = process.platform, env = process.env } = {},
 ) {
   if (platform !== 'win32' || !env.SystemRoot) return skipped('wrong-desktop')
@@ -60,6 +80,7 @@ export async function requestAttention(
   const exe = win32.join(env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
   const childEnv = Object.fromEntries(Object.entries(env).filter(([key]) =>
     /^(PATH|PATHEXT|PSMODULEPATH|SystemRoot|windir|TEMP|TMP|USERPROFILE|LOCALAPPDATA|APPDATA|ProgramData|ComSpec)$/i.test(key)))
+  const title = normalizeToastTitle(conversationTitle)
   let response
   try {
     encodedScript ??= Buffer.from(readFileSync(new URL('./flash.ps1', import.meta.url), 'utf8'), 'utf16le').toString('base64')
@@ -68,6 +89,7 @@ export async function requestAttention(
       env: {
         ...childEnv, DSH_FLASH_PID: String(parentId), DSH_FLASH_EXE: desktopExe,
         DSH_FLASH_PROBE: probe ? '1' : '0', DSH_TOAST_TEST: test ? '1' : '0',
+        ...(title ? { DSH_TOAST_CONVERSATION_TITLE: title } : {}),
       },
     })
   } catch (error) {

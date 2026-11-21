@@ -1,4 +1,5 @@
 // Watch only live work observed after activation; never replay a saved conversation.
+// Report one qualifying session ID, or an empty context for a coalesced batch.
 export function watchCompletions(ctx, notify) {
   const sessions = new Map()
   const checks = new Set()
@@ -27,7 +28,8 @@ export function watchCompletions(ctx, notify) {
       scheduled = undefined
       const batch = [...checks]
       checks.clear()
-      let needsReminder = false
+      let completed = 0
+      let singleSessionId
       for (const id of batch) {
         const state = sessions.get(id)
         if (state?.candidate === undefined) continue
@@ -48,9 +50,11 @@ export function watchCompletions(ctx, notify) {
         if (goal?.phase === 'active' && goal.activation === 'armed') continue
         sessions.delete(id)
         // Pause advances the revision, not the ID. It only silences this Goal's own work.
-        if (goal?.phase !== 'paused' || state.candidate !== goal.id) needsReminder = true
+        if (goal?.phase === 'paused' && state.candidate === goal.id) continue
+        completed++
+        singleSessionId = id
       }
-      if (needsReminder) notify()
+      if (completed) notify(completed === 1 ? { sessionId: singleSessionId } : {})
     })
   }
 

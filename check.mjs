@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { setImmediate as flush } from 'node:timers/promises'
 import { watchCompletions } from './completion.js'
+import { resolveSessionTitle } from './titles.js'
 import { apply } from './index.js'
 import { requestAttention } from './windows.js'
 
@@ -85,19 +86,20 @@ function fixtures() {
 }
 
 const f = fixtures()
-let calls = 0
+const notifications = []
 let expected = 0
-async function expect(delta, description) {
+async function expect(delta, description, context) {
   expected += delta
   await flush()
-  assert.equal(calls, expected, description)
+  assert.equal(notifications.length, expected, description)
+  if (context !== undefined) assert.deepEqual(notifications.at(-1), [context], description)
 }
-const stop = watchCompletions(f.ctx, () => calls++)
+const stop = watchCompletions(f.ctx, (...args) => notifications.push(args))
 const a = f.agent('root')
 f.end(a)
 await expect(0, 'no reminder while still running')
 f.status(a, 'idle')
-await expect(1, 'root completion')
+await expect(1, 'root completion exposes only its session ID', { sessionId: a.id })
 f.emit('agent/inbox/discarded', { agent: a, message: f.message() })
 await expect(0, 'a delivered completion is not repeated')
 
@@ -237,7 +239,14 @@ f.end(a, turn++)
 f.end(replacement, 2)
 f.status(a, 'idle')
 f.status(replacement, 'idle')
-await expect(1, 'simultaneous completions coalesce for a single taskbar button')
+await expect(1, 'simultaneous completions coalesce without naming any session', {})
+f.end(a, turn++)
+f.goal(replacement, 'create', 'active', 'armed')
+f.end(replacement, 3, { input: f.message('goal', replacement.goal) })
+f.goal(replacement, 'pause', 'paused')
+f.status(a, 'idle')
+f.status(replacement, 'idle')
+await expect(1, 'a paused Goal in the same batch does not hide the sole qualifying session', { sessionId: a.id })
 f.end(a, turn++)
 f.status(a, 'idle')
 stop()
@@ -246,11 +255,43 @@ assert.equal(f.listeners.size, 0)
 
 const live = fixtures()
 apply(live.ctx)
-assert.deepEqual([...live.commands.keys()], ['taskbar-test', 'taskbar-test-status'])
+assert.deepEqual([...live.commands.keys()], ['taskbar-test', 'taskbar-test-status', 'taskbar-title-on', 'taskbar-title-off'])
 assert.match(live.commands.get('taskbar-test').handler().text, /10 秒/)
 live.dispose()
 assert.equal(live.commands.size + live.listeners.size, 0)
 console.log('PASS: conversation lifecycle, queue, Goal, cancellation, error and cleanup')
+
+const titleSession = { id: 'title-session', header: {} }
+let projectedTitle = '  会话标题 📝  '
+let reads = 0
+const titleContext = {
+  agents: new Map([[titleSession.id, { session: titleSession }]]),
+  get(name) {
+    assert.equal(name, 'sessionProjections')
+    return {
+      snapshot(session, keys) {
+        assert.equal(session, titleSession)
+        assert.deepEqual(keys, ['title'])
+        reads++
+        if (projectedTitle instanceof Error) throw projectedTitle
+        return { asOfSeq: 42, values: { title: projectedTitle } }
+      },
+    }
+  },
+}
+assert.equal(resolveSessionTitle(titleContext), undefined, 'coalesced context skips lookup')
+assert.equal(resolveSessionTitle(titleContext, 'unknown'), undefined, 'cold/missing sessions are not opened')
+assert.equal(reads, 0)
+assert.equal(resolveSessionTitle(titleContext, titleSession.id), '会话标题 📝')
+projectedTitle = 'renamed'
+assert.equal(resolveSessionTitle(titleContext, titleSession.id), 'renamed', 'reads the current title; no title cache')
+for (const unavailable of [null, undefined, 41, '\r\n  ', new Error('could not read title')]) {
+  projectedTitle = unavailable
+  assert.equal(resolveSessionTitle(titleContext, titleSession.id), undefined)
+}
+assert.equal(reads, 7, 'each title read selects the exact session and title key')
+assert.equal(resolveSessionTitle({ ...titleContext, get: () => undefined }, titleSession.id), undefined)
+console.log('PASS: optional current title lookup and generic fallback')
 
 const parentArg = process.argv[2]
 if (parentArg !== undefined) {

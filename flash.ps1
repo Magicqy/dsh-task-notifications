@@ -4,6 +4,53 @@ function Write-Result([string]$Attention, [string]$Toast = 'skipped') {
     @{ attention = $Attention; toast = $Toast } | ConvertTo-Json -Compress
 }
 
+function Test-DshOpenProtocol([string]$DesktopPath) {
+    # Only add protocol activation for the installed handler matching the
+    # Desktop executable already verified by the window check.
+    $protocol = $shell = $command = $choice = $null
+    try {
+        $protocol = [Microsoft.Win32.Registry]::ClassesRoot.OpenSubKey('dsh')
+        if ($null -eq $protocol -or $protocol.GetValue('URL Protocol') -isnot [string]) { return $false }
+        $shell = $protocol.OpenSubKey('shell')
+        if ($null -eq $shell -or $shell.GetValue('', '') -notin @('', 'open')) { return $false }
+        $command = $shell.OpenSubKey('open\command')
+        if ($null -eq $command -or $null -ne $command.GetValue('DelegateExecute')) { return $false }
+        $registered = $command.GetValue('', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+        $expected = '"' + $DesktopPath + '" "%1"'
+        if ($registered -isnot [string] -or -not [string]::Equals($registered, $expected, [StringComparison]::OrdinalIgnoreCase)) {
+            return $false
+        }
+        $choice = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\Microsoft\Windows\Shell\Associations\UrlAssociations\dsh\UserChoice')
+        return ($null -eq $choice -or $choice.GetValue('ProgId') -eq 'dsh')
+    } catch {
+        return $false
+    } finally {
+        foreach ($key in @($choice, $command, $shell, $protocol)) {
+            if ($null -ne $key) { $key.Dispose() }
+        }
+    }
+}
+
+function New-ToastPayload([bool]$CanActivate, [bool]$IsTest, [string]$ConversationTitle) {
+    $xml = [System.Xml.XmlDocument]::new()
+    $xml.LoadXml('<toast><visual><binding template="ToastGeneric"><text/><text/></binding></visual><audio silent="true"/></toast>')
+    if ($CanActivate) {
+        # This exact URI is allowlisted by Desktop. Never derive it from title or chat data.
+        $xml.DocumentElement.SetAttribute('launch', 'dsh://open')
+        $xml.DocumentElement.SetAttribute('activationType', 'protocol')
+    }
+    $text = $xml.GetElementsByTagName('text')
+    if ($IsTest) {
+        $text.Item(0).InnerText = 'DSH 提醒测试'
+        $text.Item(1).InnerText = '这是手动触发的 Windows 通知。'
+    } else {
+        $text.Item(0).InnerText = 'DSH 对话已结束'
+        $text.Item(1).InnerText = '可以切回 DeepSeek Harness 查看结果。'
+    }
+    if ($ConversationTitle) { $text.Item(1).InnerText = $ConversationTitle }
+    return $xml.OuterXml
+}
+
 $probe = $env:DSH_FLASH_PROBE -eq '1'
 $rootPid = 0
 if (-not [int]::TryParse($env:DSH_FLASH_PID, [ref]$rootPid) -or $rootPid -le 0) {
@@ -157,16 +204,10 @@ if ($attention -eq 'no-window' -or $attention -eq 'flash-requested' -or
             } elseif ($setting -cne 'Enabled') {
                 $toastResult = 'failed'
             } else {
+                $canActivate = Test-DshOpenProtocol $env:DSH_FLASH_EXE
+                $payload = New-ToastPayload $canActivate ($env:DSH_TOAST_TEST -eq '1') $env:DSH_TOAST_CONVERSATION_TITLE
                 $xml = [Windows.Data.Xml.Dom.XmlDocument]::new()
-                $xml.LoadXml('<toast><visual><binding template="ToastGeneric"><text/><text/></binding></visual><audio silent="true"/></toast>')
-                $text = $xml.GetElementsByTagName('text')
-                if ($env:DSH_TOAST_TEST -eq '1') {
-                    $text.Item(0).InnerText = 'DSH 提醒测试'
-                    $text.Item(1).InnerText = '这是手动触发的 Windows 通知。'
-                } else {
-                    $text.Item(0).InnerText = 'DSH 对话已结束'
-                    $text.Item(1).InnerText = '可以切回 DeepSeek Harness 查看结果。'
-                }
+                $xml.LoadXml($payload)
                 $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
                 if ($probe) {
                     $toastResult = 'ready'

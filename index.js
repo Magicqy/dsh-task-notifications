@@ -1,4 +1,5 @@
 import { watchCompletions } from './completion.js'
+import { resolveSessionTitle } from './titles.js'
 import { requestAttention } from './windows.js'
 
 export const inject = ['commands', 'profileContext', 'agents', 'goals']
@@ -44,7 +45,30 @@ function formatResult({ attention, toast }) {
   return `${windowStatus}\n${notificationStatus}`
 }
 
-export function apply(ctx) {
+export function notificationTitle(ctx, config, sessionId) {
+  // Do not read title projections at all unless this profile opted in.
+  if (config?.showConversationTitle !== true || sessionId === undefined) return undefined
+  return resolveSessionTitle(ctx, sessionId)
+}
+
+async function setTitlePreference(ctx, enabled) {
+  try {
+    const entry = ctx.fiber?.entry
+    const editor = ctx.get('configEditor')
+    if (!entry || !editor) return { kind: 'error', text: '当前配置无法保存标题开关。' }
+    await editor.edit(entry, current => ({ ...current, showConversationTitle: enabled }))
+    return {
+      kind: 'success',
+      text: enabled
+        ? '已开启通知显示对话标题。Windows 可能把标题显示在锁屏或保留在通知中心。'
+        : '已关闭标题。之后的通知不会带对话标题；Windows 已收到的旧通知不会自动删除。',
+    }
+  } catch {
+    return { kind: 'error', text: '标题开关未保存。请检查当前 DSH 配置是否可编辑。' }
+  }
+}
+
+export function apply(ctx, config) {
   if (process.platform !== 'win32' || ctx.profileContext.name !== 'desktop') return
   ctx.effect(() => {
     let timer
@@ -53,24 +77,26 @@ export function apply(ctx) {
     let disposed = false
     let last = '还没有运行提醒。'
 
-    function trigger(kind = 'auto') {
+    function trigger(kind, sessionId) {
       if (disposed) return
       if (attempt !== undefined) {
-        if (rerun !== 'test') rerun = kind
+        if (kind === 'test' || rerun === undefined) rerun = { kind, sessionId }
+        else if (rerun.kind === 'auto' && rerun.sessionId !== sessionId) rerun = { kind: 'auto' }
         return
       }
       const run = new AbortController()
       attempt = run
       const label = kind === 'test' ? '手动测试' : '对话结束'
       last = `${label}：正在检查 DSH 窗口。`
-      void requestAttention({ signal: run.signal, test: kind === 'test' }).then(result => {
+      const conversationTitle = notificationTitle(ctx, config, sessionId)
+      void requestAttention({ signal: run.signal, test: kind === 'test', conversationTitle }).then(result => {
         if (!disposed) last = `${label}：${formatResult(result)}`
       }).finally(() => {
         attempt = undefined
         if (rerun !== undefined && !disposed) {
           const next = rerun
           rerun = undefined
-          trigger(next)
+          trigger(next.kind, next.sessionId)
         }
       }).catch(() => {
         // Handle unexpected formatting or cleanup failures too, without exposing
@@ -82,12 +108,13 @@ export function apply(ctx) {
     const removeStart = ctx.commands.register({
       name: 'taskbar-test',
       description: '10 秒后手动验证 DSH 任务栏高亮和 Windows 通知',
-      handler() {
+      handler({ agent } = {}) {
         if (timer !== undefined) return { kind: 'error', text: '已有一次手动测试在倒计时。' }
-        last = '已开始倒计时：10 秒内切去其他应用，或最小化 DSH，观察高亮和静音通知。'
+        const sessionId = agent?.id
+        last = '已开始倒计时：10 秒内切去其他应用或最小化 DSH；看到通知后点击测试是否唤起 DSH。'
         timer = setTimeout(() => {
           timer = undefined
-          trigger('test')
+          trigger('test', sessionId)
         }, 10_000)
         return { kind: 'success', text: last }
       },
@@ -97,12 +124,24 @@ export function apply(ctx) {
       description: '查看最近一次任务栏和系统通知状态',
       handler: () => ({ kind: 'success', text: last }),
     })
-    const stopWatching = watchCompletions(ctx, trigger)
+    const removeTitleOn = ctx.commands.register({
+      name: 'taskbar-title-on',
+      description: '让通知显示对话标题（可能出现在锁屏）',
+      handler: () => setTitlePreference(ctx, true),
+    })
+    const removeTitleOff = ctx.commands.register({
+      name: 'taskbar-title-off',
+      description: '让之后的通知隐藏对话标题',
+      handler: () => setTitlePreference(ctx, false),
+    })
+    const stopWatching = watchCompletions(ctx, ({ sessionId } = {}) => trigger('auto', sessionId))
     return () => {
       disposed = true
       stopWatching()
       clearTimeout(timer)
       attempt?.abort()
+      removeTitleOff()
+      removeTitleOn()
       removeStatus()
       removeStart()
     }
