@@ -1,0 +1,54 @@
+# DSH 对话提醒 0.1.0：实现原理与发布评估
+> 说明一次对话如何成为 Windows 提醒，区分已验证的行为与公开发布前的风险。
+
+## 1. 功能边界
+
+- 当前仅适用于 Windows 的 DSH Desktop `0.2.2-rc.5`。在其他 profile、macOS 或浏览器独立部署中不工作；未验证其他 DSH 版本。
+- 提醒对象是正在运行的主对话：DSH 在后台，第一次观察到该轮真正结束时请求高亮和静音通知。通知只含固定提示，不包含标题、路径或对话正文。
+- 不接管用户问题或工具审批，不改变会话运行，不抢焦点，不改托盘图标；等待介入和 macOS 都不在本版范围内。
+
+## 2. 从会话到提醒
+
+1. **加载**：[`package.json`](../package.json) 指定版本、DSH 引擎、`win32` 与资源出口；[`cordis.patch.yml`](../cordis.patch.yml) 挂载一个 Host 插件。 [`index.js:31–33`](../index.js#L31-L33) 再检查是 Desktop profile。插件不改 DSH 安装包、不依赖 Client 插槽。
+2. **提取状态**：[`completion.js:43–76`](../completion.js#L43-L76) 监听正在提交的 `session/event`，不扫描旧会话日志。由 `turn/start` 建立一条会话记录，要求真实 `step/start` 和来自 `user`、`retry` 或 `goal` 的输入。子代理、空轮次、定时任务自身和取消不直接触发。`completed`、`error`、`max-tokens`、`blocked` 可以成为候选。
+3. **判断真正结束**：[`completion.js:9–40`](../completion.js#L9-L40) 在下一轮事件循环合并候选。再次确认仍是同一个会话、Agent 空闲且没有待处理输入；若 Goal 还在 `active + armed` 则等后续事件。当前实现把任何处于 `paused` 的 Goal 一律排除，需确认这不会吞掉普通对话结束。
+4. **提交到本机**：[`index.js:40–61`](../index.js#L40-L61) 同时只运行一个助手，最多合并一个后续请求。卸载时解除监听、取消手测计时器并尝试中止助手。 [`windows.js`](../windows.js) 只执行固定的 PowerShell 路径与随包脚本，不拼接会话内容，不传完整环境，设有 12 秒超时和输出上限。
+5. **高亮与通知**：[`flash.ps1:49–87`](../flash.ps1#L49-L87) 核对宿主的父进程、可执行文件路径、Windows 会话和窗口所有权；前台或候选不明确时跳过。用 `FlashWindowEx` 请求任务栏提醒到回前台，不抢焦点。 [`flash.ps1:97–147`](../flash.ps1#L97-L147) 用 DSH 安装器注册的 `com.deepseek.dsh` 身份和 WinRT 提交静音通知，发送前复检前台；没有任务栏窗口时仍尝试通知。Windows 自己决定呈现方式和通知权限。`submitted` 不是“已看到横幅”。
+
+流程：`会话事件 → 完成候选 → 空闲、无排队、无续跑 → 本机助手 → 任务栏和通知中心`。
+
+## 3. 初步质量判断
+
+| 维度 | 已有优势 | 当前限制 |
+|---|---|---|
+| 通用性 | 会话判断与 Windows 交付分开，不靠 DOM 或会话文本。 | DSH Hook 与主进程关系仅在指定版本验证；窗口类名与 AppUserModelID 是当前产物的具体约定。Mac 可复用会话判断，但须新增交付实现和可见性测试。 |
+| 合理性 | 先用 DSH 的事件判断完成，再用 OS 接口提醒。未知窗口不猜测；用户可用 `/taskbar-test-status` 检查提交结果。 | 前台判断只代表当前本机窗口；外部 Web 客户端、隐藏窗口与锁屏的组合需要验收。目标暂停与普通会话的边界待核。 |
+| 简洁性 | 一个 Host bundle、零依赖、一个短生命周期助手，不用常驻轮询、Web 路由或数据库。 | 一份 PowerShell 同时包含窗口定位、C# 互操作和 WinRT 通知；未来加入第二平台时才值得提炼交付接口。 |
+| 效率 | 每条事件只做轻量状态变更，单批合并判断；没有模型消耗。 | 每次提醒都新起 PowerShell、编译 C# 并读取 Start 菜单。本机对完整只读探测测了三次：1,198、1,093、1,037 毫秒；不是实际可见横幅的延迟，也不代表其他机器。 |
+| 可发布性 | 具备独立 `.tgz`、双语元信息、图标、README 和回归命令。 | 当前是私有本地安装包；正式公开发布还涉及命名冲突、发行许可证和跨环境验证，不能只看 npm 打包是否成功。 |
+
+## 4. 验证口径
+
+- 自动回归入口：[`check.mjs`](../check.mjs)；覆盖普通结束、排队、Goal 续跑、主动取消、子代理、同批合并及装卸。此测试使用模拟事件，不等同于在真实 DSH 上验证 Hook 派发。
+- 0.1.0 的离线打包、隔离目录安装、导出资源检查和自动回归已通过。本机只读探测确认了窗口与通知载荷；之前用户实际看到了 Windows 测试通知。未声称跨机器、真实自动触发路径或其他系统均已通过。
+- 兼容性来源：安装版 `dsh-agent-loop` 的 `turn/end` 和后续队列逻辑、`dsh-goal-round-driver` 的 `active + armed` 驱动判定，以及桌面主进程私有的更新通知能力。系统 API 参见 [FlashWindowEx](https://learn.microsoft.com/zh-cn/windows/win32/api/winuser/nf-winuser-flashwindowex) 和 [ToastNotificationManager](https://learn.microsoft.com/en-us/uwp/api/windows.ui.notifications.toastnotificationmanager)。
+
+## 5. 命名
+
+- `remder` 是拼写错误；`reminder` 指提醒或提醒事项，不错误，但常让人想到按时间触发。这个插件由任务事件触发。
+- 首选 `dsh-task-notifications`：直接表明是 DSH 任务通知，不绑 Windows，将来可容纳 macOS 通知和 Dock 提示。
+- 备选 `dsh-notifications` 更短，但范围偏宽，也容易与泛用通知或账号通知混淆。`dsh-attention` 最能覆盖高亮、角标和通知，但用户仅从名字不易看出用途。
+- 仓库名、安装包 ID 与插件显示名可以分开。公开发行前最好选定一致的仓库/包名并检查占用；改包 ID 要处理旧插件卸载，避免双重触发。
+
+## 6. 独立审核
+
+两名子代理分别独立审会话事件与 Windows/发行层，不读取此报告后再寻找印证。以下按影响排序。
+
+| 优先级 | 发现与证据 | 发布前的最小改法 |
+|---|---|---|
+| P1 | **会话：暂停过 Goal 后，普通对话可能永久不提醒。** [`completion.js:35–37`](../completion.js#L35-L37) 按会话当前 Goal 的 `paused` 一律丢弃，与本轮来源无关。复现：暂停 Goal 后，在原会话发普通问题、后台等结束。 | 记录本轮输入来源；只抑制与被暂停 Goal 有关的提醒，增加回归。 |
+| P1 | **会话：有些真实的失败与终止会漏报。** [`completion.js:55–62`](../completion.js#L55-L62) 只在 `user/message` 提交后承认有用户输入；Agent 取走输入后，也可能在 `preStep` 或准备模型调用失败，日志仍会产生 `turn/end:error`。 | 用实际 `agent/inbox/claimed` 辅助归因；只补已接收用户输入的失败，不给取消、回放和空轮提醒。 |
+| P2 | **交付层：助手错误模糊，输出契约没校验。** [`flash.ps1:49–54`](../flash.ps1#L49-L54) 和 [`flash.ps1:92–98`](../flash.ps1#L92-L98) 首次读取退出进程或访问失败会直接退出；[`windows.js:15–22`](../windows.js#L15-L22) 只解释 JSON，不验证字段；异常 JSON 形状可能在 [`index.js:23–28`](../index.js#L23-L28) 的异步成功回调再抛异常，末尾没有兜底。 | 定义并校验两通道结果；对可预期窗口/权限异常分类，记录有限诊断；最后统一收口拒绝。 |
+| 发行门槛 | [`package.json:2–7`](../package.json#L2-L7) 是 `private: true` 的测试命名，没有已选发行许可证；版本只验证 `0.2.2-rc.5`，真实 DSH 自动触发及 Windows 跨环境表现仍需验收。 | 先修两条 P1，与真实 DSH 跑完结/前台/续跑/退出测试；再确定公开包名与许可证。只有发布公共 npm 才移除 `private` 和更新包身份；直接发 `.tgz` 不需要。 |
+
+**结论：适合继续本机试用和提供给明确知道限制的测试者；暂不建议作为面向所有用户的公开稳定版。** 合理的下一步是稳住现有 Windows 行为，不为未来 macOS 先增加常驻进程或厚抽象。

@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-taskbar-test",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "description": "Taskbar attention and silent Windows notifications for finished DSH Desktop conversations.",
