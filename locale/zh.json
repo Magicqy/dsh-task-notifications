@@ -1,1 +1,1 @@
-{"meta":{"title":"任务栏与系统通知","description":"Windows 版 DSH Desktop 在后台时，主对话结束后高亮任务栏按钮并发出静音系统通知。Windows 已正确注册 DSH 协议时，点击通知可唤起 DSH。默认隐藏对话标题。打开插件的「设置」可选择是否显示标题、测试通知和查看诊断。"}}
+{"meta":{"title":"任务栏与系统通知","description":"Windows 版 DSH Desktop 在后台时，主对话结束后高亮任务栏按钮并发出静音系统通知。Windows 已正确注册 DSH 协议时，点击通知可唤起 DSH。默认显示对话标题。打开插件详情可关闭标题、测试通知和查看诊断。"}}
