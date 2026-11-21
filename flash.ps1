@@ -1,7 +1,8 @@
 $ErrorActionPreference = 'Stop'
 
-function Write-Result([string]$Attention, [string]$Toast = 'skipped') {
-    @{ attention = $Attention; toast = $Toast } | ConvertTo-Json -Compress
+function Write-Result([string]$Attention, [string]$Toast = 'skipped',
+                      [string]$Activation = 'not-submitted', [bool]$TitleIncluded = $false) {
+    @{ attention = $Attention; toast = $Toast; activation = $Activation; titleIncluded = $TitleIncluded } | ConvertTo-Json -Compress
 }
 
 function Test-DshOpenProtocol([string]$DesktopPath) {
@@ -48,6 +49,7 @@ function New-ToastPayload([bool]$CanActivate, [bool]$IsTest, [string]$Conversati
         $text.Item(1).InnerText = '可以切回 DeepSeek Harness 查看结果。'
     }
     if ($ConversationTitle) { $text.Item(1).InnerText = $ConversationTitle }
+    if (-not $CanActivate) { $text.Item(0).InnerText += '（请手动切回 DSH）' }
     return $xml.OuterXml
 }
 
@@ -67,7 +69,7 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 
-public static class DshTaskbarFlashTest {
+public static class DshTaskbarAttention {
     private delegate bool EnumProc(IntPtr hwnd, IntPtr ignored);
 
     [StructLayout(LayoutKind.Sequential)]
@@ -175,7 +177,7 @@ public static class DshTaskbarFlashTest {
 }
 
 function Get-Attention([bool]$ProbeOnly) {
-    try { [DshTaskbarFlashTest]::Run($rootPid, $env:DSH_FLASH_EXE, $ProbeOnly) }
+    try { [DshTaskbarAttention]::Run($rootPid, $env:DSH_FLASH_EXE, $ProbeOnly) }
     catch { 'window-check-failed' }
 }
 
@@ -209,6 +211,12 @@ if ($attention -eq 'no-window' -or $attention -eq 'flash-requested' -or
                 $xml = [Windows.Data.Xml.Dom.XmlDocument]::new()
                 $xml.LoadXml($payload)
                 $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
+                if ($env:DSH_TOAST_TEST -eq '1') {
+                    # Test notifications are replaceable and expire; do not modify other DSH history.
+                    $toast.Tag = 'notif-test'
+                    $toast.Group = 'dsh-task-notify'
+                    $toast.ExpirationTime = [DateTimeOffset]::Now.AddMinutes(2)
+                }
                 if ($probe) {
                     $toastResult = 'ready'
                 } else {
@@ -229,4 +237,9 @@ if ($attention -eq 'no-window' -or $attention -eq 'flash-requested' -or
     }
 }
 
-Write-Result $attention $toastResult
+if ($toastResult -in @('submitted', 'ready')) {
+    $activation = if ($canActivate) { 'attached' } else { 'protocol-unavailable' }
+    Write-Result $attention $toastResult $activation ([bool]$env:DSH_TOAST_CONVERSATION_TITLE)
+} else {
+    Write-Result $attention $toastResult
+}

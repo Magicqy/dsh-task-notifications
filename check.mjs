@@ -8,7 +8,7 @@ import { requestAttention } from './windows.js'
 function fixtures() {
   const listeners = new Map()
   const agents = new Map()
-  const commands = new Map()
+  const routes = new Map()
   let dispose
   let messageSeq = 0
   const ctx = {
@@ -20,7 +20,7 @@ function fixtures() {
       listeners.set(name, fn)
       return () => listeners.delete(name)
     },
-    commands: { register(cmd) { commands.set(cmd.name, cmd); return () => commands.delete(cmd.name) } },
+    connection: { fetch: { register(route) { routes.set(route.path, route); return () => routes.delete(route.path) } } },
     effect(fn) { dispose = fn() },
   }
   const emit = (name, ...args) => listeners.get(name)?.(...args)
@@ -82,7 +82,7 @@ function fixtures() {
     const { id, revision, activation } = a.goal
     emit('goal/activation-changed', { sessionId: a.id, goal: { id, revision, activation } })
   }
-  return { ctx, listeners, commands, dispose: () => dispose(), emit, agent, status, message, start, claim, finish, end, goal, disarm }
+  return { ctx, listeners, routes, dispose: () => dispose(), emit, agent, status, message, start, claim, finish, end, goal, disarm }
 }
 
 const f = fixtures()
@@ -253,12 +253,14 @@ stop()
 await expect(0, 'pending emission cancelled when disabled')
 assert.equal(f.listeners.size, 0)
 
-const live = fixtures()
-apply(live.ctx)
-assert.deepEqual([...live.commands.keys()], ['taskbar-test', 'taskbar-test-status', 'taskbar-title-on', 'taskbar-title-off'])
-assert.match(live.commands.get('taskbar-test').handler().text, /10 秒/)
-live.dispose()
-assert.equal(live.commands.size + live.listeners.size, 0)
+if (process.platform === 'win32') {
+  const live = fixtures()
+  live.ctx.get = key => live.ctx[key]
+  apply(live.ctx)
+  assert.deepEqual([...live.routes.keys()], ['/api/dsh-task-notifications'])
+  await live.dispose()
+  assert.equal(live.routes.size + live.listeners.size, 0)
+}
 console.log('PASS: conversation lifecycle, queue, Goal, cancellation, error and cleanup')
 
 const titleSession = { id: 'title-session', header: {} }

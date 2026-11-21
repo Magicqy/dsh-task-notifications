@@ -25,21 +25,23 @@ export function parseAttentionResult(stdout, probe = false) {
   } catch {
     return null
   }
-  if (!result || typeof result !== 'object' || Array.isArray(result) || Object.keys(result).length !== 2
-    || !Object.hasOwn(result, 'attention') || !Object.hasOwn(result, 'toast')) return null
+  if (!result || typeof result !== 'object' || Array.isArray(result) || Object.keys(result).length !== 4
+    || !['attention', 'toast', 'activation', 'titleIncluded'].every(key => Object.hasOwn(result, key))) return null
 
-  const { attention, toast } = result
-  if (!attentionCodes.has(attention) || !toastCodes.has(toast)) return null
+  const { attention, toast, activation, titleIncluded } = result
+  if (!attentionCodes.has(attention) || !toastCodes.has(toast) || typeof titleIncluded !== 'boolean') return null
+  const built = toast === 'submitted' || toast === 'ready'
+  if (built ? !['attached', 'protocol-unavailable'].includes(activation) : activation !== 'not-submitted' || titleIncluded) return null
   if (probe ? attention === 'flash-requested' || toast === 'submitted' : attention === 'ready' || toast === 'ready') return null
   const canToast = attention === 'no-window' || (probe
     ? attention === 'ready' || attention === 'foreground'
     : attention === 'flash-requested')
   if (!canToast && toast !== 'skipped') return null
-  return { attention, toast }
+  return { attention, toast, activation, titleIncluded }
 }
 
 function skipped(attention) {
-  return { attention, toast: 'skipped' }
+  return { attention, toast: 'skipped', activation: 'not-submitted', titleIncluded: false }
 }
 
 function classifyExecError(error) {

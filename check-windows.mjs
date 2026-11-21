@@ -4,8 +4,9 @@ import { win32 } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseAttentionResult, requestAttention } from './windows.js'
 
-const json = (attention, toast) => JSON.stringify({ attention, toast })
-const skipped = attention => ({ attention, toast: 'skipped' })
+const outcome = (attention, toast, activation = ['ready', 'submitted'].includes(toast) ? 'attached' : 'not-submitted', titleIncluded = false) => ({ attention, toast, activation, titleIncluded })
+const json = (...args) => JSON.stringify(outcome(...args))
+const skipped = attention => outcome(attention, 'skipped')
 
 for (const [attention, toast, probe] of [
   ['flash-requested', 'submitted', false],
@@ -19,7 +20,7 @@ for (const [attention, toast, probe] of [
   ['parent-exited', 'skipped', false],
   ['parent-inaccessible', 'skipped', false],
 ]) {
-  assert.deepEqual(parseAttentionResult(json(attention, toast) + '\r\n', probe), { attention, toast })
+  assert.deepEqual(parseAttentionResult(json(attention, toast) + '\r\n', probe), outcome(attention, toast))
 }
 
 const privateText = 'C:\\Private\\desktop.exe: secret-value'
@@ -73,7 +74,7 @@ const probe = await requestAttention({ parentId: 42, desktopExe, probe: true, te
   launch = args
   return { stdout: json('no-window', 'ready'), stderr: privateText }
 }))
-assert.deepEqual(probe, { attention: 'no-window', toast: 'ready' })
+assert.deepEqual(probe, outcome('no-window', 'ready'))
 const [exe, args, options] = launch
 assert.equal(exe, 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe')
 assert.deepEqual(args.slice(0, 4), ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand'])
@@ -95,9 +96,9 @@ for (const [conversationTitle, expected] of [
     assert.equal(Object.hasOwn(env, 'dsh_toast_conversation_title'), false)
     assert.equal(Object.hasOwn(env, 'DSH_TOAST_BODY'), false)
     assert.deepEqual(args, launch[1])
-    return { stdout: json('no-window', 'submitted'), stderr: titleText }
+    return { stdout: json('no-window', 'submitted', 'protocol-unavailable', expected !== undefined), stderr: titleText }
   }))
-  assert.deepEqual(result, { attention: 'no-window', toast: 'submitted' })
+  assert.deepEqual(result, outcome('no-window', 'submitted', 'protocol-unavailable', expected !== undefined))
 }
 
 // Parse the real script but evaluate only the pure XML-builder function. This
@@ -141,6 +142,7 @@ foreach ($canActivate in @($false, $true)) {
                 $expectedHeading = 'DSH 对话已结束'
                 $expectedBody = '可以切回 DeepSeek Harness 查看结果。'
             }
+            if (-not $canActivate) { $expectedHeading += '（请手动切回 DSH）' }
             if ($title) {
                 $expectedBody = $title
                 Assert-That ($payload.Contains('&lt;tag') -and $payload.Contains('&amp;')) 'Title was not escaped'

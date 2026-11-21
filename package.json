@@ -7,6 +7,7 @@
   "engines": { "dsh": "0.2.2-rc.5" },
   "exports": {
     ".": "./index.js",
+    "./client": "./client.js",
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg",
     "./package.json": "./package.json"
@@ -16,7 +17,11 @@
   "homepage": "https://github.com/Magicqy/dsh-task-notifications#readme",
   "bugs": { "url": "https://github.com/Magicqy/dsh-task-notifications/issues" },
   "license": "MIT",
-  "files": ["index.js", "completion.js", "titles.js", "windows.js", "flash.ps1", "cordis.patch.yml", "locale/*.json", "icon.svg", "README.md", "LICENSE", "check.mjs", "check-windows.mjs", "check-preferences.mjs"],
-  "scripts": { "test": "node check.mjs && node check-windows.mjs && node check-preferences.mjs" },
-  "dsh": { "bundle": { "patch": "./cordis.patch.yml", "platforms": ["win32"] } }
+  "files": ["index.js", "client.js", "config.js", "control.js", "completion.js", "titles.js", "windows.js", "flash.ps1", "cordis.patch.yml", "locale/*.json", "icon.svg", "README.md", "LICENSE", "check.mjs", "check-windows.mjs", "check-preferences.mjs", "check-control.mjs"],
+  "dependencies": { "@deepseek-ai/schemastery": "3.19.0" },
+  "scripts": { "test": "node check.mjs && node check-windows.mjs && node check-preferences.mjs && node check-control.mjs" },
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml", "platforms": ["win32"] },
+    "client": { "platform": "web", "immediately": true, "inject": ["@deepseek-ai/dsh-client-ui-plugin-manager", "@deepseek-ai/dsh-client-locale"] }
+  }
 }
