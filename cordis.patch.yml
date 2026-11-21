@@ -1,0 +1,4 @@
+- insert:
+    - id: local-taskbar-flash-test
+      name: '@local/dsh-taskbar-test'
+      config: {}

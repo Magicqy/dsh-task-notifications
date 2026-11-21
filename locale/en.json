@@ -1,0 +1,1 @@
+{"meta":{"title":"Taskbar and system notifications","description":"When a conversation ends in the background, highlight the DSH Desktop taskbar button and send a silent Windows notification with no chat content. Run /taskbar-test to verify and /taskbar-test-status to see the result."}}

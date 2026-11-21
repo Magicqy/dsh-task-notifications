@@ -1,0 +1,1 @@
+{"meta":{"title":"任务栏与系统通知","description":"Windows 版 DSH Desktop 在后台时，主对话结束后高亮任务栏按钮并发出静音系统通知。通知不包含对话内容。用 /taskbar-test 手动验证，/taskbar-test-status 查看结果。"}}
