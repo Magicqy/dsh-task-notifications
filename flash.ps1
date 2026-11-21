@@ -1,8 +1,21 @@
 $ErrorActionPreference = 'Stop'
 
-Add-Type -TypeDefinition @'
+function Write-Result([string]$Attention, [string]$Toast = 'skipped') {
+    @{ attention = $Attention; toast = $Toast } | ConvertTo-Json -Compress
+}
+
+$probe = $env:DSH_FLASH_PROBE -eq '1'
+$rootPid = 0
+if (-not [int]::TryParse($env:DSH_FLASH_PID, [ref]$rootPid) -or $rootPid -le 0) {
+    Write-Result 'invalid-parent'
+    return
+}
+
+try {
+    Add-Type -WarningAction SilentlyContinue -TypeDefinition @'
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -46,17 +59,33 @@ public static class DshTaskbarFlashTest {
             && name.ToString().StartsWith("Chrome_WidgetWin_", StringComparison.Ordinal);
     }
 
+    private static string ParentFailure(Process parent) {
+        // Some process-access failures are races with process exit. Only report
+        // exit if it can be confirmed; otherwise do not trust this process.
+        try { if (parent != null && parent.HasExited) return "parent-exited"; }
+        catch (Exception) { }
+        return "parent-inaccessible";
+    }
+
     public static string Run(int parentId, string desktopPath, bool probeOnly) {
-        if (parentId <= 0 || String.IsNullOrEmpty(desktopPath) || !Environment.UserInteractive) return "wrong-desktop";
-        using (var self = Process.GetCurrentProcess())
-        using (var parent = Process.GetProcessById(parentId)) {
-            if (parent.SessionId != self.SessionId || parent.SessionId == 0
-                || !String.Equals(parent.MainModule.FileName, desktopPath, StringComparison.OrdinalIgnoreCase)) return "wrong-desktop";
+        if (String.IsNullOrEmpty(desktopPath) || !Environment.UserInteractive) return "wrong-desktop";
+        Process parent = null;
+        try {
+            try { parent = Process.GetProcessById(parentId); }
+            catch (ArgumentException) { return "parent-exited"; }
+            if (parent.HasExited) return "parent-exited";
+            using (var self = Process.GetCurrentProcess()) {
+                var session = parent.SessionId;
+                if (session != self.SessionId || session == 0) return "wrong-desktop";
+            }
+            var module = parent.MainModule;
+            if (parent.HasExited) return "parent-exited";
+            if (module == null) return "parent-inaccessible";
+            if (!String.Equals(module.FileName, desktopPath, StringComparison.OrdinalIgnoreCase)) return "wrong-desktop";
 
             var foreground = GetForegroundWindow();
-            if (foreground == IntPtr.Zero) return "no-foreground";
             uint foregroundPid;
-            GetWindowThreadProcessId(foreground, out foregroundPid);
+            if (foreground == IntPtr.Zero || GetWindowThreadProcessId(foreground, out foregroundPid) == 0) return "no-foreground";
             if (foregroundPid == (uint)parentId) return "foreground";
 
             var matches = new List<IntPtr>();
@@ -64,16 +93,17 @@ public static class DshTaskbarFlashTest {
                 if (IsDesktopWindow(hwnd, (uint)parentId)) matches.Add(hwnd);
                 return true;
             }, IntPtr.Zero)) return "enumeration-failed";
+            if (parent.HasExited) return "parent-exited";
             if (matches.Count == 0) return "no-window";
             if (matches.Count != 1) return "ambiguous-window";
 
             var window = matches[0];
             foreground = GetForegroundWindow();
-            if (foreground == IntPtr.Zero) return "no-foreground";
-            GetWindowThreadProcessId(foreground, out foregroundPid);
+            if (foreground == IntPtr.Zero || GetWindowThreadProcessId(foreground, out foregroundPid) == 0) return "no-foreground";
             if (foregroundPid == (uint)parentId || GetAncestor(foreground, RootOwner) == window) return "foreground";
 
-            if (parent.HasExited || !IsDesktopWindow(window, (uint)parentId)) return "no-window";
+            if (parent.HasExited) return "parent-exited";
+            if (!IsDesktopWindow(window, (uint)parentId)) return "no-window";
             if (probeOnly) return "ready";
 
             var info = new FlashInfo {
@@ -84,22 +114,35 @@ public static class DshTaskbarFlashTest {
             // FLASHW_STOP: the shell may have a separate update reminder.
             FlashWindowEx(ref info);
             return "flash-requested";
-        }
+        } catch (Win32Exception) { return ParentFailure(parent); }
+          catch (InvalidOperationException) { return ParentFailure(parent); }
+          catch (UnauthorizedAccessException) { return ParentFailure(parent); }
+          catch (System.Security.SecurityException) { return ParentFailure(parent); }
+        finally { if (parent != null) parent.Dispose(); }
     }
 }
 '@
+} catch {
+    Write-Result 'interop-unavailable'
+    return
+}
 
-$probe = $env:DSH_FLASH_PROBE -eq '1'
-$rootPid = [int]$env:DSH_FLASH_PID
-$attention = [DshTaskbarFlashTest]::Run($rootPid, $env:DSH_FLASH_EXE, $probe)
+function Get-Attention([bool]$ProbeOnly) {
+    try { [DshTaskbarFlashTest]::Run($rootPid, $env:DSH_FLASH_EXE, $ProbeOnly) }
+    catch { 'window-check-failed' }
+}
+
+$attention = Get-Attention $probe
 $toastResult = 'skipped'
 
-# Probe the notifier even in the foreground, but never show a probe notification.
-if ($probe -or $attention -in @('flash-requested', 'no-window')) {
+# Only a verified desktop can reach the notifier. Probes also allow foreground
+# but cannot call Show; normal requests still notify when hidden in the tray.
+if ($attention -eq 'no-window' -or $attention -eq 'flash-requested' -or
+    ($probe -and $attention -in @('ready', 'foreground'))) {
     try {
         # Use the app identity already registered by the Desktop installer.
         $appId = 'com.deepseek.dsh'
-        if ((Get-StartApps).AppID -notcontains $appId) {
+        if ((Get-StartApps -WarningAction SilentlyContinue).AppID -notcontains $appId) {
             $toastResult = 'app-not-registered'
         } else {
             $null = [Windows.UI.Notifications.ToastNotificationManager,Windows.UI.Notifications,ContentType=WindowsRuntime]
@@ -109,8 +152,10 @@ if ($probe -or $attention -in @('flash-requested', 'no-window')) {
             $null = [Windows.Data.Xml.Dom.XmlDocument,Windows.Data.Xml.Dom.XmlDocument,ContentType=WindowsRuntime]
             $notifier = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($appId)
             $setting = [string]$notifier.Setting
-            if ($setting -and $setting -ne 'Enabled') {
+            if ($setting -cin @('DisabledForApplication', 'DisabledForUser', 'DisabledByGroupPolicy', 'DisabledByManifest')) {
                 $toastResult = 'disabled:' + $setting
+            } elseif ($setting -cne 'Enabled') {
+                $toastResult = 'failed'
             } else {
                 $xml = [Windows.Data.Xml.Dom.XmlDocument]::new()
                 $xml.LoadXml('<toast><visual><binding template="ToastGeneric"><text/><text/></binding></visual><audio silent="true"/></toast>')
@@ -128,7 +173,7 @@ if ($probe -or $attention -in @('flash-requested', 'no-window')) {
                 } else {
                     # Recheck without flashing in case the user switched back
                     # while the notifier and sender registration were prepared.
-                    $now = [DshTaskbarFlashTest]::Run($rootPid, $env:DSH_FLASH_EXE, $true)
+                    $now = Get-Attention $true
                     if ($now -in @('ready', 'no-window')) {
                         $notifier.Show($toast)
                         $toastResult = 'submitted'
@@ -140,8 +185,7 @@ if ($probe -or $attention -in @('flash-requested', 'no-window')) {
         }
     } catch {
         $toastResult = 'failed'
-        if ($probe) { [Console]::Error.WriteLine($_.Exception.Message + "`n" + $_.ScriptStackTrace) }
     }
 }
 
-@{ attention = $attention; toast = $toastResult } | ConvertTo-Json -Compress
+Write-Result $attention $toastResult

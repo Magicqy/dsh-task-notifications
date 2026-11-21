@@ -1,9 +1,9 @@
 {
-  "name": "@local/dsh-taskbar-test",
+  "name": "dsh-task-notifications",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Taskbar attention and silent Windows notifications for finished DSH Desktop conversations.",
+  "description": "Background task notifications for DeepSeek Harness Desktop (Windows).",
   "engines": { "dsh": "0.2.2-rc.5" },
   "exports": {
     ".": "./index.js",
@@ -12,7 +12,11 @@
     "./package.json": "./package.json"
   },
   "keywords": ["dsh-plugin", "deepseek-harness", "windows", "taskbar", "notifications"],
-  "files": ["index.js", "completion.js", "windows.js", "flash.ps1", "cordis.patch.yml", "locale/*.json", "icon.svg", "README.md", "check.mjs"],
-  "scripts": { "test": "node check.mjs" },
+  "repository": { "type": "git", "url": "git+https://github.com/Magicqy/dsh-task-notifications.git" },
+  "homepage": "https://github.com/Magicqy/dsh-task-notifications#readme",
+  "bugs": { "url": "https://github.com/Magicqy/dsh-task-notifications/issues" },
+  "license": "MIT",
+  "files": ["index.js", "completion.js", "windows.js", "flash.ps1", "cordis.patch.yml", "locale/*.json", "icon.svg", "README.md", "LICENSE", "check.mjs", "check-windows.mjs"],
+  "scripts": { "test": "node check.mjs && node check-windows.mjs" },
   "dsh": { "bundle": { "patch": "./cordis.patch.yml", "platforms": ["win32"] } }
 }
