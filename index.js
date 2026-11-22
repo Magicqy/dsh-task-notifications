@@ -48,10 +48,9 @@ export function apply(ctx, config) {
       const run = new AbortController()
       attempt = run
       const showTitle = titleEnabled(config)
-      const conversationTitle = kind === 'test'
-        ? (showTitle ? '对话标题示例（非真实对话）' : undefined)
-        : notificationTitle(ctx, config, sessionId)
-      void requestAttention({ signal: run.signal, test: kind === 'test', conversationTitle }).then(result => {
+      const sampleTitle = kind === 'test' && showTitle
+      const conversationTitle = kind === 'test' ? undefined : notificationTitle(ctx, config, sessionId)
+      void requestAttention({ signal: run.signal, test: kind === 'test', sampleTitle, conversationTitle }).then(result => {
         if (!disposed) record(publicStatus(kind, showTitle, result))
       }).finally(() => {
         attempt = undefined

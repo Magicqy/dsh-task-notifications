@@ -1,10 +1,13 @@
 import { execFile } from 'node:child_process'
-import { readFileSync } from 'node:fs'
 import { win32 } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 
 const execPowerShell = promisify(execFile)
-let encodedScript
+// Execute the packaged script directly. The old -EncodedCommand transport reached
+// 32,721 of Windows' 32,767-character command line, so a few added characters
+// would silently break every notification.
+const helperScript = fileURLToPath(new URL('./flash.ps1', import.meta.url))
 
 const attentionCodes = new Set([
   'flash-requested', 'ready', 'foreground', 'no-window', 'ambiguous-window',
@@ -74,7 +77,7 @@ function normalizeToastTitle(value) {
 }
 
 export async function requestAttention(
-  { parentId = process.ppid, desktopExe = process.execPath, probe = false, test = false, conversationTitle, signal } = {},
+  { parentId = process.ppid, desktopExe = process.execPath, probe = false, test = false, sampleTitle = false, conversationTitle, signal } = {},
   { exec = execPowerShell, platform = process.platform, env = process.env } = {},
 ) {
   if (platform !== 'win32' || !env.SystemRoot) return skipped('wrong-desktop')
@@ -85,17 +88,19 @@ export async function requestAttention(
   const title = normalizeToastTitle(conversationTitle)
   let response
   try {
-    encodedScript ??= Buffer.from(readFileSync(new URL('./flash.ps1', import.meta.url), 'utf8'), 'utf16le').toString('base64')
-    response = await exec(exe, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encodedScript], {
+    response = await exec(exe, [
+      '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', helperScript,
+    ], {
       windowsHide: true, timeout: 12000, maxBuffer: 32 * 1024, signal,
       env: {
         ...childEnv, DSH_FLASH_PID: String(parentId), DSH_FLASH_EXE: desktopExe,
         DSH_FLASH_PROBE: probe ? '1' : '0', DSH_TOAST_TEST: test ? '1' : '0',
+        ...(sampleTitle ? { DSH_TOAST_SAMPLE: '1' } : {}),
         ...(title ? { DSH_TOAST_CONVERSATION_TITLE: title } : {}),
       },
     })
   } catch (error) {
-    // Node's error may contain the encoded command, paths, stdout and stderr.
+    // Node's error may contain paths, stdout and stderr.
     // Only the fixed classification leaves this boundary.
     return skipped(classifyExecError(error))
   }

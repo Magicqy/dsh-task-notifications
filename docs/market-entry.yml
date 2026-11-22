@@ -1,0 +1,10 @@
+# Copy this file to awesome-dsh-plugin/data/plugins/Magicqy__dsh-task-notifications.yml
+# after the v0.1.2 GitHub Release (and the icon on main) exists.
+url: https://github.com/Magicqy/dsh-task-notifications
+name: Magicqy/dsh-task-notifications
+category: notify
+description:
+  en: 'Windows-only plugin that flashes the taskbar and sends a silent Windows notification when a background DeepSeek Harness Desktop conversation finishes, with an optional conversation title.'
+  zh: '仅 Windows：后台的 DeepSeek Harness Desktop 对话结束时闪烁任务栏并发送静音 Windows 通知，可选显示对话标题。'
+tarball: https://github.com/Magicqy/dsh-task-notifications/releases/download/v0.1.2/dsh-task-notifications.tgz
+icon: https://raw.githubusercontent.com/Magicqy/dsh-task-notifications/main/assets/icon-180.png

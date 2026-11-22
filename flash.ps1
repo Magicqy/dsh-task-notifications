@@ -1,3 +1,5 @@
+﻿# Keep this file UTF-8 with BOM: Windows PowerShell 5.1 reads BOM-less scripts
+# with the ANSI code page and would misparse the Chinese notification copy.
 $ErrorActionPreference = 'Stop'
 
 function Write-Result([string]$Attention, [string]$Toast = 'skipped',
@@ -5,7 +7,11 @@ function Write-Result([string]$Attention, [string]$Toast = 'skipped',
     @{ attention = $Attention; toast = $Toast; activation = $Activation; titleIncluded = $TitleIncluded } | ConvertTo-Json -Compress
 }
 
-function Test-DshOpenProtocol([string]$DesktopPath) {
+function Test-DshToastActivation([string]$DesktopPath, [int]$Build = [Environment]::OSVersion.Version.Build) {
+    # Windows 10 (build < 22000) does not dispatch protocol activation from a
+    # toast; clicking only dismisses it. Marking activation unavailable keeps the
+    # toast honest and adds the manual-switch suffix. Windows 11 dispatches it.
+    if ($Build -lt 22000) { return $false }
     # Only add protocol activation for the installed handler matching the
     # Desktop executable already verified by the window check.
     $protocol = $shell = $command = $choice = $null
@@ -32,7 +38,30 @@ function Test-DshOpenProtocol([string]$DesktopPath) {
     }
 }
 
-function New-ToastPayload([bool]$CanActivate, [bool]$IsTest, [string]$ConversationTitle) {
+function New-ToastPayload([bool]$CanActivate, [bool]$IsTest, [string]$ConversationTitle,
+                          [bool]$SampleTitle = $false, [string]$Language = 'en') {
+    # Notification copy follows the Windows display language: Chinese Windows
+    # gets Chinese, every other display language falls back to English.
+    $copy = if ($Language -eq 'zh') {
+        @{
+            autoHeading = 'DSH 对话已结束'
+            autoBody = '可以切回 DeepSeek Harness 查看结果。'
+            testHeading = 'DSH 提醒测试'
+            testBody = '这是手动触发的 Windows 通知。'
+            sampleTitle = '对话标题示例（非真实对话）'
+            manualSuffix = '（请手动切回 DSH）'
+        }
+    } else {
+        @{
+            autoHeading = 'DSH conversation finished'
+            autoBody = 'Switch back to DeepSeek Harness to see the result.'
+            testHeading = 'DSH notification test'
+            testBody = 'This is a manually triggered Windows notification.'
+            sampleTitle = 'Sample conversation title (not a real chat)'
+            manualSuffix = ' (switch back to DSH manually)'
+        }
+    }
+
     $xml = [System.Xml.XmlDocument]::new()
     $xml.LoadXml('<toast><visual><binding template="ToastGeneric"><text/><text/></binding></visual><audio silent="true"/></toast>')
     if ($CanActivate) {
@@ -42,18 +71,21 @@ function New-ToastPayload([bool]$CanActivate, [bool]$IsTest, [string]$Conversati
     }
     $text = $xml.GetElementsByTagName('text')
     if ($IsTest) {
-        $text.Item(0).InnerText = 'DSH 提醒测试'
-        $text.Item(1).InnerText = '这是手动触发的 Windows 通知。'
+        $text.Item(0).InnerText = $copy.testHeading
+        if ($SampleTitle) { $text.Item(1).InnerText = $copy.sampleTitle }
+        else { $text.Item(1).InnerText = $copy.testBody }
     } else {
-        $text.Item(0).InnerText = 'DSH 对话已结束'
-        $text.Item(1).InnerText = '可以切回 DeepSeek Harness 查看结果。'
+        $text.Item(0).InnerText = $copy.autoHeading
+        if ($ConversationTitle) { $text.Item(1).InnerText = $ConversationTitle }
+        else { $text.Item(1).InnerText = $copy.autoBody }
     }
-    if ($ConversationTitle) { $text.Item(1).InnerText = $ConversationTitle }
-    if (-not $CanActivate) { $text.Item(0).InnerText += '（请手动切回 DSH）' }
+    if (-not $CanActivate) { $text.Item(0).InnerText += $copy.manualSuffix }
     return $xml.OuterXml
 }
 
 $probe = $env:DSH_FLASH_PROBE -eq '1'
+$sampleTitle = $env:DSH_TOAST_SAMPLE -eq '1'
+$language = if ([System.Globalization.CultureInfo]::CurrentUICulture.TwoLetterISOLanguageName -eq 'zh') { 'zh' } else { 'en' }
 $rootPid = 0
 if (-not [int]::TryParse($env:DSH_FLASH_PID, [ref]$rootPid) -or $rootPid -le 0) {
     Write-Result 'invalid-parent'
@@ -206,8 +238,8 @@ if ($attention -eq 'no-window' -or $attention -eq 'flash-requested' -or
             } elseif ($setting -cne 'Enabled') {
                 $toastResult = 'failed'
             } else {
-                $canActivate = Test-DshOpenProtocol $env:DSH_FLASH_EXE
-                $payload = New-ToastPayload $canActivate ($env:DSH_TOAST_TEST -eq '1') $env:DSH_TOAST_CONVERSATION_TITLE
+                $canActivate = Test-DshToastActivation $env:DSH_FLASH_EXE
+                $payload = New-ToastPayload $canActivate ($env:DSH_TOAST_TEST -eq '1') $env:DSH_TOAST_CONVERSATION_TITLE $sampleTitle $language
                 $xml = [Windows.Data.Xml.Dom.XmlDocument]::new()
                 $xml.LoadXml($payload)
                 $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
@@ -239,7 +271,8 @@ if ($attention -eq 'no-window' -or $attention -eq 'flash-requested' -or
 
 if ($toastResult -in @('submitted', 'ready')) {
     $activation = if ($canActivate) { 'attached' } else { 'protocol-unavailable' }
-    Write-Result $attention $toastResult $activation ([bool]$env:DSH_TOAST_CONVERSATION_TITLE)
+    $titleIncluded = ([bool]$env:DSH_TOAST_CONVERSATION_TITLE) -or ($sampleTitle -and $env:DSH_TOAST_TEST -eq '1')
+    Write-Result $attention $toastResult $activation $titleIncluded
 } else {
     Write-Result $attention $toastResult
 }

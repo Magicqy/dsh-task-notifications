@@ -4,7 +4,12 @@ window.__ModuleLoader__.load({
     const React = require('react')
     const h = React.createElement
     const namespace = 'dsh-task-notifications'
-    const endpoint = 'api/dsh-task-notifications'
+    // Resolve against the page base explicitly, so a <base> element or a path
+    // prefix cannot silently redirect the control call away from the Host route.
+    function controlEndpoint() {
+      const base = globalThis.document?.baseURI ?? 'http://dsh.internal/'
+      return new URL('api/dsh-task-notifications', base)
+    }
     const dictionary = {
       en: {
         settings: 'Notification privacy',
@@ -224,7 +229,7 @@ window.__ModuleLoader__.load({
         const failed = action === 'setTitle' ? 'saveFailed' : action === 'test' ? 'testFailed' : 'readFailed'
         try {
           const common = { signal: controller.signal, cache: 'no-store', mode: 'same-origin', credentials: 'same-origin', redirect: 'error' }
-          const response = await fetch(endpoint, action === 'refresh' ? common : {
+          const response = await fetch(controlEndpoint(), action === 'refresh' ? common : {
             ...common, method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(action === 'setTitle' ? { action, enabled } : { action }),
           })

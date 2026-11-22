@@ -1,8 +1,13 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { win32 } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseAttentionResult, requestAttention } from './windows.js'
+
+// Windows PowerShell 5.1 reads a BOM-less script with the ANSI code page and
+// misparses the Chinese copy; keep the marker even when editing on another OS.
+assert.deepEqual([...readFileSync(new URL('./flash.ps1', import.meta.url)).subarray(0, 3)], [0xEF, 0xBB, 0xBF])
 
 const outcome = (attention, toast, activation = ['ready', 'submitted'].includes(toast) ? 'attached' : 'not-submitted', titleIncluded = false) => ({ attention, toast, activation, titleIncluded })
 const json = (...args) => JSON.stringify(outcome(...args))
@@ -42,7 +47,9 @@ for (const stdout of [
   assert.equal(parseAttentionResult(stdout, true), null)
 }
 
-// Every attention request injects an executor, never contacting the notifier.
+// Every scripted attention request injects an executor, never contacting the
+// notifier. The live check below launches only the packaged helper itself with
+// an absent parent, so it returns before any window or toast work.
 const env = {
   SystemRoot: 'C:\\Windows', PATH: 'C:\\Tools', FAKE_SECRET: privateText,
   dsh_toast_conversation_title: privateText, DSH_TOAST_BODY: privateText,
@@ -77,11 +84,25 @@ const probe = await requestAttention({ parentId: 42, desktopExe, probe: true, te
 assert.deepEqual(probe, outcome('no-window', 'ready'))
 const [exe, args, options] = launch
 assert.equal(exe, 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe')
-assert.deepEqual(args.slice(0, 4), ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand'])
+assert.deepEqual(args.slice(0, 6), ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File'])
+assert.equal(args.length, 7)
+assert.ok(args[6].endsWith('flash.ps1'), 'The helper must run the packaged script directly')
+assert.equal(args.includes('-EncodedCommand'), false, 'Do not regress to the length-limited encoded command')
 assert.deepEqual(options, {
   windowsHide: true, timeout: 12000, maxBuffer: 32 * 1024, signal,
   env: { SystemRoot: env.SystemRoot, PATH: env.PATH, DSH_FLASH_PID: '42', DSH_FLASH_EXE: desktopExe, DSH_FLASH_PROBE: '1', DSH_TOAST_TEST: '1' },
 })
+const sample = await requestAttention({ parentId: 42, desktopExe, test: true, sampleTitle: true }, runtime(async (_exe, _args, { env }) => {
+  assert.equal(env.DSH_TOAST_SAMPLE, '1')
+  assert.equal(Object.hasOwn(env, 'DSH_TOAST_CONVERSATION_TITLE'), false)
+  return { stdout: json('no-window', 'submitted', 'protocol-unavailable', true) }
+}))
+assert.deepEqual(sample, outcome('no-window', 'submitted', 'protocol-unavailable', true))
+const noSample = await requestAttention({ parentId: 42, desktopExe, test: true }, runtime(async (_exe, _args, { env }) => {
+  assert.equal(Object.hasOwn(env, 'DSH_TOAST_SAMPLE'), false)
+  return { stdout: json('no-window', 'submitted', 'protocol-unavailable', false) }
+}))
+assert.deepEqual(noSample, outcome('no-window', 'submitted', 'protocol-unavailable', false))
 const titleText = `🔔 <tag attr="value"> & $env:PATH dsh://not-open`
 for (const [conversationTitle, expected] of [
   [undefined, undefined], [null, undefined], [7, undefined], [{ title: titleText }, undefined],
@@ -99,6 +120,16 @@ for (const [conversationTitle, expected] of [
     return { stdout: json('no-window', 'submitted', 'protocol-unavailable', expected !== undefined), stderr: titleText }
   }))
   assert.deepEqual(result, outcome('no-window', 'submitted', 'protocol-unavailable', expected !== undefined))
+}
+
+// Launch the packaged helper itself: a broken invocation (for example a command
+// line over the Windows limit) must fail here instead of at notification time.
+if (process.platform === 'win32') {
+  const live = await requestAttention({
+    parentId: 0x7fffffff, desktopExe: 'C:\\nonexistent\\desktop.exe', probe: true,
+  })
+  assert.equal(live.attention, 'parent-exited', 'The packaged helper must start and report an absent parent')
+  assert.equal(live.toast, 'skipped')
 }
 
 // Parse the real script but evaluate only the pure XML-builder function. This
@@ -119,39 +150,64 @@ if ($definition.Count -ne 1) { throw 'Expected exactly one XML builder' }
 function Assert-That([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw $Message }
 }
+$copy = @{
+    zh = @{
+        autoHeading = 'DSH 对话已结束'; autoBody = '可以切回 DeepSeek Harness 查看结果。'
+        testHeading = 'DSH 提醒测试'; testBody = '这是手动触发的 Windows 通知。'
+        sampleTitle = '对话标题示例（非真实对话）'; manualSuffix = '（请手动切回 DSH）'
+    }
+    en = @{
+        autoHeading = 'DSH conversation finished'; autoBody = 'Switch back to DeepSeek Harness to see the result.'
+        testHeading = 'DSH notification test'; testBody = 'This is a manually triggered Windows notification.'
+        sampleTitle = 'Sample conversation title (not a real chat)'; manualSuffix = ' (switch back to DSH manually)'
+    }
+}
 foreach ($canActivate in @($false, $true)) {
-    foreach ($isTest in @($false, $true)) {
-        foreach ($title in @('', $env:DSH_TEST_TITLE)) {
-            $payload = New-ToastPayload $canActivate $isTest $title
-            $xml = [System.Xml.XmlDocument]::new()
-            $xml.LoadXml($payload)
-            $toast = $xml.DocumentElement
-            Assert-That ($toast.Name -ceq 'toast' -and $toast.SelectNodes('.//*').Count -eq 5) 'Unexpected toast nodes'
-            if ($canActivate) {
-                Assert-That ($toast.Attributes.Count -eq 2 -and $toast.GetAttribute('launch') -ceq 'dsh://open' -and
-                    $toast.GetAttribute('activationType') -ceq 'protocol') 'Incorrect protocol activation'
-            } else {
-                Assert-That ($toast.Attributes.Count -eq 0) 'Unexpected activation when protocol handler is unverified'
+    foreach ($language in @('zh', 'en')) {
+        foreach ($isTest in @($false, $true)) {
+            foreach ($title in @('', $env:DSH_TEST_TITLE)) {
+                foreach ($sample in @($false, $true)) {
+                    $payload = New-ToastPayload $canActivate $isTest $title $sample $language
+                    $xml = [System.Xml.XmlDocument]::new()
+                    $xml.LoadXml($payload)
+                    $toast = $xml.DocumentElement
+                    Assert-That ($toast.Name -ceq 'toast' -and $toast.SelectNodes('.//*').Count -eq 5) 'Unexpected toast nodes'
+                    if ($canActivate) {
+                        Assert-That ($toast.Attributes.Count -eq 2 -and $toast.GetAttribute('launch') -ceq 'dsh://open' -and
+                            $toast.GetAttribute('activationType') -ceq 'protocol') 'Incorrect protocol activation'
+                    } else {
+                        Assert-That ($toast.Attributes.Count -eq 0) 'Unexpected activation when protocol handler is unverified'
+                    }
+                    $text = $toast.SelectNodes('visual/binding[@template="ToastGeneric"]/text')
+                    Assert-That ($text.Count -eq 2 -and $null -ne $toast.SelectSingleNode('audio[@silent="true"]')) 'Incorrect visual or audio'
+                    $expected = $copy[$language]
+                    if ($isTest) {
+                        $expectedHeading = $expected.testHeading
+                        if ($sample) { $expectedBody = $expected.sampleTitle }
+                        else { $expectedBody = $expected.testBody }
+                    } else {
+                        $expectedHeading = $expected.autoHeading
+                        if ($title) { $expectedBody = $title }
+                        else { $expectedBody = $expected.autoBody }
+                    }
+                    if (-not $canActivate) { $expectedHeading += $expected.manualSuffix }
+                    if ($title -and -not $isTest) {
+                        Assert-That ($payload.Contains('&lt;tag') -and $payload.Contains('&amp;')) 'Title was not escaped'
+                    }
+                    Assert-That ($text.Item(0).InnerText -ceq $expectedHeading -and
+                        $text.Item(1).InnerText -ceq $expectedBody) "Incorrect toast text ($language, test=$isTest, sample=$sample)"
+                }
             }
-            $text = $toast.SelectNodes('visual/binding[@template="ToastGeneric"]/text')
-            Assert-That ($text.Count -eq 2 -and $null -ne $toast.SelectSingleNode('audio[@silent="true"]')) 'Incorrect visual or audio'
-            if ($isTest) {
-                $expectedHeading = 'DSH 提醒测试'
-                $expectedBody = '这是手动触发的 Windows 通知。'
-            } else {
-                $expectedHeading = 'DSH 对话已结束'
-                $expectedBody = '可以切回 DeepSeek Harness 查看结果。'
-            }
-            if (-not $canActivate) { $expectedHeading += '（请手动切回 DSH）' }
-            if ($title) {
-                $expectedBody = $title
-                Assert-That ($payload.Contains('&lt;tag') -and $payload.Contains('&amp;')) 'Title was not escaped'
-            }
-            Assert-That ($text.Item(0).InnerText -ceq $expectedHeading -and
-                $text.Item(1).InnerText -ceq $expectedBody) 'Incorrect toast text'
         }
     }
 }
+$activationDefinition = @($tree.EndBlock.Statements | Where-Object {
+    $_ -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $_.Name -ceq 'Test-DshToastActivation'
+})
+if ($activationDefinition.Count -ne 1) { throw 'Expected exactly one toast activation check' }
+. ([scriptblock]::Create($activationDefinition[0].Extent.Text))
+Assert-That (-not (Test-DshToastActivation -DesktopPath 'C:\nonexistent\DeepSeek Harness.exe' -Build 19045)) 'Windows 10 must not attach protocol activation'
+Assert-That (-not (Test-DshToastActivation -DesktopPath 'C:\nonexistent\DeepSeek Harness.exe' -Build 22621)) 'An unregistered handler must not attach'
 'payload-ok'
 `
   const exe = win32.join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
@@ -166,5 +222,5 @@ foreach ($canActivate in @($false, $true)) {
   })
   assert.equal(stdout.trim(), 'payload-ok')
 }
-console.log('PASS: Windows result schema, bounded title transport and isolated helper launch/failure mapping' +
-  (process.platform === 'win32' ? ', and silent ToastGeneric XML/activation' : ' (XML payload check requires Windows)'))
+console.log('PASS: Windows result schema, bounded title transport, packaged helper launch, failure mapping' +
+  (process.platform === 'win32' ? ', and bilingual silent ToastGeneric XML/activation' : ' (XML payload check requires Windows)'))

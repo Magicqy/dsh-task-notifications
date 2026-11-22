@@ -1,60 +1,67 @@
-# DSH 对话提醒 0.1.0：实现原理与发布评估
-> 0.1.0 历史审核；正式开发版的设置入口、依赖和验收步骤以 [README](../README.md) 为准。
+# 实现原理与发布评估
 
-## 1. 功能边界
+> 适用于当前 0.1.x 开发线。0.1.0 的历史审核与缺陷记录见 `v0.1.0` 标签中的旧版本文档；本文件只描述修复后的状态。
 
-- 当前仅适用于 Windows 的 DSH Desktop `0.2.2-rc.5`。在其他 profile、macOS 或浏览器独立部署中不工作；未验证其他 DSH 版本。
-- 提醒对象是正在运行的主对话：DSH 在后台，第一次观察到该轮真正结束时请求高亮和静音通知。通知只含固定提示，不包含标题、路径或对话正文。
-- 不接管用户问题或工具审批，不改变会话运行，不抢焦点，不改托盘图标；等待介入和 macOS 都不在本版范围内。
+## 1. 范围与版本绑定
 
-## 2. 从会话到提醒
+- 仅适用于 Windows 上的 DSH Desktop `0.2.2-rc.5`；其他 profile、macOS 和独立 Web 部署不工作。
+- `engines.dsh` 是精确版本。DSH 的兼容性预检会把不满足要求的行标为 `disabled`，所以 DSH 升级后插件会停用，直到发布匹配的新版本。不要在没有跑完验收的情况下放宽范围。
+- 提醒对象是正在运行的主对话：DSH 在后台、该轮真正结束时请求任务栏高亮和静音通知。子代理、空轮、主动取消、单独的定时轮次和 Goal 自动续跑的中间轮次不触发。
 
-1. **加载**：[`package.json`](../package.json) 指定版本、DSH 引擎、`win32` 与资源出口；[`cordis.patch.yml`](../cordis.patch.yml) 挂载一个 Host 插件。 [`index.js`](../index.js) 再检查是 Desktop profile。插件不改 DSH 安装包、不依赖 Client 插槽。
-2. **提取状态**：[`completion.js`](../completion.js) 监听实时会话事件，不扫描旧会话日志。对于正常结束，需要实际进入步骤且记录了用户、重试或 Goal 输入；早期失败则可通过已认领的同轮输入正确归因。子代理、空轮次、仅由定时任务触发的轮次和取消不直接触发。
-3. **判断真正结束**：[`completion.js`](../completion.js) 分开保存当前轮和已经产生的提醒候选，按事件循环批次合并。再次确认仍是同一个会话、Agent 空闲且没有待处理输入；若 Goal 还在 `active + armed` 则等后续事件。已暂停的 Goal 不会挡住与其无关的普通对话。
-4. **提交到本机**：[`index.js`](../index.js) 同时只运行一个助手，最多合并一个后续请求。卸载时解除监听、取消手测计时器并尝试中止助手。 [`windows.js`](../windows.js) 只执行固定的 PowerShell 路径与随包脚本，不拼接会话内容，不传完整环境，设有 12 秒超时和输出上限；返回值要通过两通道的格式检查。
-5. **高亮与通知**：[`flash.ps1`](../flash.ps1) 核对宿主的父进程、可执行文件路径、Windows 会话和窗口所有权；前台或候选不明确时跳过。用 `FlashWindowEx` 请求任务栏提醒到回前台，不抢焦点。用 DSH 安装器注册的 `com.deepseek.dsh` 身份和 WinRT 提交静音通知，发送前复检前台；没有任务栏窗口时仍尝试通知。Windows 自己决定呈现方式和通知权限。`submitted` 不是“已看到横幅”。
+## 2. 组成与数据流
 
-流程：`会话事件 → 完成候选 → 空闲、无排队、无续跑 → 本机助手 → 任务栏和通知中心`。
+1. **Host 入口**：[`index.js`](../index.js) 在 `win32` + `desktop` profile 下激活，注入 `profileContext`、`agents`、`goals`、`connection`。
+2. **完成判定**：[`completion.js`](../completion.js) 只观察激活后的实时事件；按事件循环批次合并候选，再确认同一会话、Agent 空闲、无排队输入、Goal 不在 `active + armed`。暂停的 Goal 只抑制与它自己的输入有关的候选。
+3. **标题**：[`titles.js`](../titles.js) 只读当前会话的 `title` 投影；[`config.js`](../config.js) 的 `showConversationTitle` 是 `volatile` 字段，保存时不重挂载插件，进行中的测试和诊断状态不会丢。
+4. **本机交付**：[`index.js`](../index.js) 同时只运行一个助手，最多合并一个后续请求；卸载时解除监听、取消倒计时并中止助手。[`windows.js`](../windows.js) 只执行固定的 PowerShell 路径和随包脚本，不拼接会话内容，不传完整环境，12 秒超时、32 KiB 输出上限。
+5. **窗口与通知**：[`flash.ps1`](../flash.ps1) 核对父进程、可执行文件、Windows 会话、窗口所有权和前台；用 `FlashWindowEx` 请求任务栏提醒（不抢焦点），用 DSH 安装器注册的 `com.deepseek.dsh` 身份提交静音 Toast；发送前复检前台。没有任务栏窗口时仍尝试通知。`submitted` 只表示已提交，不表示用户看到了横幅。
+6. **详情页**：[`client.js`](../client.js) 是一个 Client 插件，通过 `plugins.bundle.config`（以包名为 key）在插件详情页渲染设置、测试和诊断；它通过 `api/dsh-task-notifications` 与 Host 的 owner-only 路由通信。
 
-## 3. 初步质量判断
+## 3. 关键实现决定
 
-| 维度 | 已有优势 | 当前限制 |
-|---|---|---|
-| 通用性 | 会话判断与 Windows 交付分开，不靠 DOM 或会话文本。 | DSH Hook 与主进程关系仅在指定版本验证；窗口类名与 AppUserModelID 是当前产物的具体约定。Mac 可复用会话判断，但须新增交付实现和可见性测试。 |
-| 合理性 | 先用 DSH 的事件判断完成，再用 OS 接口提醒。未知窗口不猜测；用户可用 `/taskbar-test-status` 检查提交结果。 | 前台判断只代表当前本机窗口；外部 Web 客户端、隐藏窗口与锁屏的组合仍需要桌面端验收。 |
-| 简洁性 | 一个 Host bundle、零依赖、一个短生命周期助手，不用常驻轮询、Web 路由或数据库。 | 一份 PowerShell 同时包含窗口定位、C# 互操作和 WinRT 通知；未来加入第二平台时才值得提炼交付接口。 |
-| 效率 | 每条事件只做轻量状态变更，单批合并判断；没有模型消耗。 | 每次提醒都新起 PowerShell、编译 C# 并读取 Start 菜单。本机对完整只读探测测了三次：1,198、1,093、1,037 毫秒；不是实际可见横幅的延迟，也不代表其他机器。 |
-| 可发布性 | 具备独立 `.tgz`、双语元信息、图标、README 和回归命令。 | 当前是私有本地安装包；正式公开发布还涉及命名冲突、发行许可证和跨环境验证，不能只看 npm 打包是否成功。 |
+- **不再用 `-EncodedCommand`**：旧方案把整个脚本编码进命令行，实测 32,721 / 32,767 字符，只剩约 45 字符余量，任何文案增加都可能让助手启动失败且没有测试能发现。现在直接 `-File` 执行包内 `flash.ps1`，并新增“用不存在的父进程 PID 真实启动一次”的回归。
+- **`flash.ps1` 必须保存为 UTF-8 with BOM**：Windows PowerShell 5.1 会把无 BOM 的脚本按 ANSI 代码页读取，中文文案会解析失败；文件顶部有说明，修改后要保留 BOM。
+- **通知文案跟随 Windows 显示语言**：`CurrentUICulture` 为中文时用中文，其他语言回退英文；测试示例标题也由 `flash.ps1` 提供，Host 不再传中文示例。DSH 界面语言不覆盖系统通知语言。
+- **Toast 唤起按系统版本降级**：Windows 10（build < 22000）的 Toast 不派发 `activationType="protocol"`，点击只关闭通知；`flash.ps1` 在 Win10 上把 `activation` 记为 `protocol-unavailable`，标题加“请手动切回”后缀。Windows 11 才附加 `dsh://open`，且仍受前台锁和 DSH 聚焦实现影响。
+- **固定码表**：attention / toast / title / activation 只允许约定的代码；HTTP 路由只接受 `{"action":"test"}` 或 `{"action":"setTitle","enabled":boolean}`，512 B 上限、精确 JSON 形状、重复键检测、固定错误码，不把原始异常、路径或聊天文本送出边界。
+- **隐私默认开启是产品决策**：标题可能包含首条提示词片段，并可能出现在锁屏或通知中心。README、插件描述和发布说明必须保留该披露；关闭只影响之后的提醒，不删除历史通知。
+- **保存链路**：页面通过 `configEditor.edit` 写 profile 补丁，`volatile` 字段原地提交；[`check-preferences.mjs`](../check-preferences.mjs) 用模拟的 Loader 引用覆盖保存成功、拒绝和路由注销。真实桌面端已由用户实测：保存 → 完整重启 → 值仍在（2026-11-22）。
+- **市场发布不依赖 npm**：`private: true` 保持不变。公开 Discover 的 format-1 索引当前只收 npm 版本，因此本包的市场入口是 **awesome-dsh-plugin / dshmarket** 目录的 GitHub Release tarball 条目（`docs/market-entry.yml`），不是公开 Discover 索引。包元数据已提供 `author`、`icon`、`homepage`、`repository`、`keywords`、`license`、`engines.dsh` 和 `assets/icon-180.png`；README 作为插件详情的长描述回退，双语覆盖 en/zh。若以后要进公开 Discover，需要发布 npm，或让用户配置一个支持 `git` source 的自建索引。
+- **控制路由的 base**：[`client.js`](../client.js) 用 `document.baseURI` 显式解析控制地址，避免 `<base>` 或路径前缀把请求带到错误位置。
 
-## 4. 验证口径
+## 4. 验证状态
 
-- 自动回归入口：[`check.mjs`](../check.mjs)；覆盖普通结束、排队、Goal 续跑、主动取消、子代理、同批合并及装卸。此测试使用模拟事件，不等同于在真实 DSH 上验证 Hook 派发。
-- 0.1.0 的离线打包、隔离目录安装、导出资源检查和自动回归已通过。本机只读探测确认了窗口与通知载荷；之前用户实际看到了 Windows 测试通知。未声称跨机器、真实自动触发路径或其他系统均已通过。
-- 兼容性来源：安装版 `dsh-agent-loop` 的 `turn/end` 和后续队列逻辑、`dsh-goal-round-driver` 的 `active + armed` 驱动判定，以及桌面主进程私有的更新通知能力。系统 API 参见 [FlashWindowEx](https://learn.microsoft.com/zh-cn/windows/win32/api/winuser/nf-winuser-flashwindowex) 和 [ToastNotificationManager](https://learn.microsoft.com/en-us/uwp/api/windows.ui.notifications.toastnotificationmanager)。
+已通过：
 
-## 5. 命名
+- `npm test`：会话生命周期、队列、Goal、取消、错误归因、标题、Windows 结果校验、双语 Toast 载荷、随包助手真实启动、控制路由输入校验、保存链路。
+- 本机只读探测：`node check.mjs <DSH主进程PID> "<DSH可执行文件>"`，确认窗口定位和通知载荷就绪，探测模式不调用 `Show`。
+- 详情页保存 → 完全重启 DSH → 值仍在（2026-11-22 用户实测）。
+- Windows 10 22H2：通知可显示；点击只关闭通知（系统不派发协议激活），与实现预期一致。
+- 0.1.2 的 tarball 在一次性 profile 中安装成功，`@deepseek-ai/schemastery` 由 profile 根解析，`Config` 默认标题为 `true`；该 profile 已清理。
+- 0.1.1 的 GitHub 资产与当时的 `v0.1.1` HEAD 经 `npm pack` 的产物逐字节一致。
 
-- 仓库、包名和 DSH 插件条目统一为 `dsh-task-notifications`。名称强调任务事件，不绑操作系统；当前实现仍仅支持 Windows。
-- 原型包 `@local/dsh-taskbar-test` 迁移前必须卸载，旧包与新版共用斜杠命令。本次本地打包不自动发布，也不替换已安装原型。
+未验证（发布前手工做）：
 
-## 6. 独立审核
+- 真实横幅/通知中心/锁屏的显示、托盘隐藏时的点击；
+- Windows 11、其他机器、英文 Windows 下的实际通知文案与点击/聚焦；
+- 真实自动完成路径的端到端通知（自动测试使用模拟事件）。
 
-两名子代理分别从原始代码独立审核会话事件及 Windows/发行层，未以本报告作底稿。审核基线为本地提交 `a80e5b1`；下表的旧代码位置和风险描述用于重现原缺陷，不代表修复后的状态。事件审核使用安装版 Cordis 验证了插件激活、作用域事件派发和卸载取消；这是隔离测试，不是安装包后的桌面端到端验收。
+## 5. 已知限制
 
-| 优先级 | 发现与证据 | 发布前的最小改法 |
-|---|---|---|
-| P1 | **会话：暂停过 Goal 后，普通对话可能永久不提醒。** [`completion.js:35–37`](../completion.js#L35-L37) 按会话当前 Goal 的 `paused` 一律丢弃，与本轮来源无关。复现：暂停 Goal 后，在原会话发普通问题、后台等结束。 | 记录本轮输入来源；只抑制与被暂停 Goal 有关的提醒，增加回归。 |
-| P1 | **会话：有些真实的失败与终止会漏报。** [`completion.js:55–62`](../completion.js#L55-L62) 只在 `user/message` 提交后承认有用户输入；Agent 取走输入后，也可能在 `preStep` 或准备模型调用失败，日志仍会产生 `turn/end:error`。 | 用实际 `agent/inbox/claimed` 辅助归因；只补已接收用户输入的失败，不给取消、回放和空轮提醒。 |
-| P2 | **会话：后续不合格的轮次会擦掉已产生的候选。** [`completion.js:47–64`](../completion.js#L47-L64) 每逢 `turn/start` 就覆盖状态。独立回放验证：普通对话后紧接一个定时轮次，或 Goal 续跑被拒且转为 `blocked`，最终都漏报。 | 分开维护当前轮次与待提交提醒；不合格的轮次既不新增候选，也不默认擦除前一轮候选。 |
-| P2 | **交付层：助手错误模糊，输出契约没校验。** [`flash.ps1:49–54`](../flash.ps1#L49-L54) 和 [`flash.ps1:92–98`](../flash.ps1#L92-L98) 首次读取退出进程或访问失败会直接退出；[`windows.js:15–22`](../windows.js#L15-L22) 只解释 JSON，不验证字段；异常 JSON 形状可能在 [`index.js:23–28`](../index.js#L23-L28) 的异步成功回调再抛异常，末尾没有兜底。 | 定义并校验两通道结果；对可预期窗口/权限异常分类，记录有限诊断；最后统一收口拒绝。 |
-| 发行门槛 | [`package.json:2–7`](../package.json#L2-L7) 是 `private: true` 的测试命名，没有已选发行许可证；版本只验证 `0.2.2-rc.5`，真实 DSH 自动触发及 Windows 跨环境表现仍需验收。 | 先修两条 P1，与真实 DSH 跑完结/前台/续跑/退出测试；再确定公开包名与许可证。只有发布公共 npm 才移除 `private` 和更新包身份；直接发 `.tgz` 不需要。 |
+- DSH 升级后插件会被停用，需要跟随发版；这是精确版本锁定的预期结果。
+- 每次提醒新起 PowerShell、编译 C#、读取 Start 菜单，本机完整探测约 0.5–1.2 秒；这是提交延迟，不是横幅出现时间。
+- 组策略可能阻止 `Add-Type` 或 `-File`；非标准安装可能没有正确的开始菜单发送者注册；多窗口或候选不明确时跳过。
+- 不抢焦点、不改托盘图标、不支持等待答复/审批或对话深链；Windows 10 点击通知只关闭通知，Windows 11 点击请求回到 DSH，但可能被前台锁或虚拟桌面挡住。
+- 通知只含固定提示或当前标题，不含消息正文；但标题和完成时间仍可能在锁屏或通知中心可见。
 
-补充风险：会话队列判断使用了当前版本特有的 `inbox.hasPending`，后续适配需比较公开的 `nextTurn` / `nextStep` 的语义。Windows 组策略可能阻止 `Add-Type`，非标准安装可能没有正确的开始菜单发送者注册；均未在本机复现。通知虽无正文，仍可能在锁屏或通知中心暴露完成时间，并与 DSH 的其他通知共用系统权限。只读探测应显式区分 `ready`、系统禁用和非法 PID，帮助验收；文档应按 Windows 版本区分打开通知中心的方法。
+## 6. 发布检查表
 
-## 7. 0.1.0 发布前复核
+1. `npm ci && npm test`。
+2. 只读探测：`node check.mjs <DSH主进程PID> "<DSH可执行文件完整路径>"`。
+3. 手工验收：Windows 10 22H2 与 Windows 11；标题开/关/再开（含重启）；设置页保存；横幅、通知中心、锁屏、托盘隐藏；中英文 Windows 文案。Win10 验证点击只关闭并出现手动切回提示；Win11 验证点击/聚焦。
+4. 更新 `version`，`npm pack --ignore-scripts`，记录 SHA-256。
+5. 打 tag、上传 `dsh-task-notifications.tgz`，发布说明写支持版本、默认标题披露和 SHA-256；市场条目用 `docs/market-entry.yml`，指向该 Release tarball，不发布 npm。
+6. 干净 profile 安装、使用、卸载各一次（0.1.2 已做安装与 `Config` 加载，界面使用和卸载待做）。
+7. 仓库创建满 1 天后，把 `docs/market-entry.yml` 复制为 awesome-dsh-plugin 的 `data/plugins/Magicqy__dsh-task-notifications.yml` 并提 PR；dshmarket 次日刷新，公开 Discover 索引仍只收 npm 版本。
 
-- [`completion.js`](../completion.js) 修复了暂停 Goal 误抑制、认领后早期失败漏报、及后续空轮次或定时轮次覆盖已产生候选的问题；回归测试同时覆盖取消、续跑和公开队列读取。
-- [`windows.js`](../windows.js) 与 [`flash.ps1`](../flash.ps1) 只接受约定的两通道结果，用固定代码报告父进程退出、无权限、互操作失败、异常输出或超时；不会把原始异常或本机路径送进会话状态。 [`check-windows.mjs`](../check-windows.mjs) 用模拟器验证这些路径，无需发通知。
-- 在此前用户看到手动通知的同一安装上，修订后只读探针仍能定位窗口并构造静音通知；真实桌面端的自动触发和跨机器表现未作为本版已验证项。
-- 发布为 Windows 限定的 `0.1.0`，不承诺跨 DSH 版本，也不新增等待介入或 macOS。源码与安装包通过 GitHub 分发，不发布 npm 注册表。
+没有通过的项不要写成已支持。
